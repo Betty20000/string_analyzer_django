@@ -1,7 +1,8 @@
 from django.urls import path, re_path
-from .views import StringView
+from analyzer.views import StringView
 
 urlpatterns = [
-    path("strings/", StringView.as_view(), name="string-list-create"),
-    re_path(r"^strings/(?P<string_value>.+)/$", StringView.as_view(), name="string-detail"),
+    # Handles both with and without trailing slash
+    re_path(r"^strings/?$", StringView.as_view(), name="strings"),
+    re_path(r"^strings/(?P<string_value>[^/]+)/?$", StringView.as_view(), name="string_detail"),
 ]
