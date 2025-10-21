@@ -6,46 +6,58 @@ from .models import AnalyzedString
 from .serializers import CreateStringSerializer
 from urllib.parse import unquote
 import hashlib, re
-from rest_framework.exceptions import ParseError
-from rest_framework.parsers import JSONParser
 
 
 class StringView(APIView):
-
     """
-    Unified string view handling:
+    Handles all string operations:
     - POST /strings/ → create/analyze
     - GET /strings/ → list with filters
     - GET /strings/?query=... → natural language filtering
     - GET /strings/<string_value>/ → fetch single string
     - DELETE /strings/<string_value>/ → delete string
     """
-    parser_classes = [JSONParser]
+
+    # ---- Natural Language Parser ----
+    @staticmethod
+    def parse_nl_query(q: str):
+        q = q.lower().strip()
+        filters = {}
+
+        if "single word" in q or re.search(r"\bone word\b", q):
+            filters["word_count"] = 1
+        if "palindrom" in q:
+            filters["is_palindrome"] = True
+        if "longer than" in q:
+            m = re.search(r"longer than (\d+)", q)
+            if m:
+                filters["min_length"] = int(m.group(1)) + 1
+        if "shorter than" in q:
+            m = re.search(r"shorter than (\d+)", q)
+            if m:
+                filters["max_length"] = int(m.group(1)) - 1
+        if "contain" in q:
+            m = re.search(r"letter ([a-z])", q)
+            if m:
+                filters["contains_character"] = m.group(1)
+        if "first vowel" in q:
+            filters["contains_character"] = "a"
+
+        if not filters:
+            raise ValueError("Unable to parse natural language query")
+
+        return filters
 
     # ---- POST /strings/ ----
     def post(self, request):
-        try:
-            # Ensure DRF parses the JSON
-            data = request.data
-        except ParseError as e:
-            # Malformed JSON → 400
-            return Response(
-                {"detail": f"Invalid JSON: {str(e)}"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        serializer = CreateStringSerializer(data=data)
         serializer = CreateStringSerializer(data=request.data)
-        if not serializer.is_valid():
 
-            if any(err.code == "invalid_type" for err_list in serializer.errors.values() for err in err_list):
-                # 422 — invalid type
+        if not serializer.is_valid():
+            if "invalid_type" in str(serializer.errors):
                 return Response(serializer.errors, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
-            # 400 — missing or empty
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         obj, created = serializer.save()
-        # 409 Conflict — string already exists
         if not created:
             return Response(obj.to_representation(), status=status.HTTP_409_CONFLICT)
 
@@ -54,7 +66,6 @@ class StringView(APIView):
     # ---- GET /strings/ or /strings/<string_value>/ ----
     def get(self, request, string_value: str = None):
         if string_value:
-            # Decode URL-encoded string
             raw_value = unquote(string_value)
             sha = hashlib.sha256(raw_value.encode("utf-8")).hexdigest()
             obj = get_object_or_404(AnalyzedString, id=sha)
@@ -66,27 +77,14 @@ class StringView(APIView):
         return self._list_filtered(request)
 
     # ---- DELETE /strings/<string_value>/ ----
-    def delete(self, request, string_value: None):
+    def delete(self, request, string_value: str):
+        if not string_value.strip():
+            return Response({"detail": "String value required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Handle missing or empty string value safely
-        if not string_value or string_value.strip() == "":
-            return Response(
-                {"detail": "String value is required in the URL."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        # Decode in case of URL encoding
         raw_value = unquote(string_value)
-
-        # Compute SHA256 of the decoded string
         sha = hashlib.sha256(raw_value.encode("utf-8")).hexdigest()
-
-        # Fetch or return 404 if not found
         obj = get_object_or_404(AnalyzedString, id=sha)
-
-        # Delete the object
         obj.delete()
-
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     # ---- Helper: filtered list ----
@@ -143,34 +141,3 @@ class StringView(APIView):
             "count": len(data),
             "interpreted_query": {"original": query, "parsed_filters": parsed}
         }, status=status.HTTP_200_OK)
-
-    # ---- Static method: parse natural language queries ----
-    @staticmethod
-    def parse_nl_query(q: str):
-        q = q.lower().strip()
-        filters = {}
-
-        # Heuristics
-        if "single word" in q or re.search(r"\bone word\b|\bword_count\b", q):
-            filters["word_count"] = 1
-        if "palindrom" in q:
-            filters["is_palindrome"] = True
-        if "longer than" in q:
-            m = re.search(r"longer than (\d+)", q)
-            if m:
-                filters["min_length"] = int(m.group(1)) + 1
-        if "shorter than" in q:
-            m = re.search(r"shorter than (\d+)", q)
-            if m:
-                filters["max_length"] = int(m.group(1)) - 1
-        if "contain" in q:
-            m = re.search(r"letter ([a-z])", q)
-            if m:
-                filters["contains_character"] = m.group(1)
-        if "first vowel" in q:
-            filters["contains_character"] = "a"
-
-        if not filters:
-            raise ValueError("Unable to parse natural language query")
-
-        return filters
